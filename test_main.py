@@ -1,25 +1,57 @@
-from main import translate
+from main import translate, extract_url
 
 
-def test_threshold_with_current():
-    raw = "CPU on 七牛香港-主控 exceeded 85% (current: 92.3%)"
+def test_real_beszel_disk_alert():
+    raw = (
+        "云悠HK disk usage above threshold\n"
+        "Disk usage averaged 94.43% for the previous 1 minute.\n\n"
+        "https://monitor.treesir.pub/system/gf6bzpi6976sh3c"
+    )
+    result = translate(raw)
+    assert "云悠HK" in result
+    assert "磁盘使用率" in result
+    assert "94.43%" in result
+    assert "超过" in result
+    assert "https://monitor.treesir.pub/system/gf6bzpi6976sh3c" in result
+
+
+def test_real_beszel_cpu_alert():
+    raw = (
+        "七牛香港-主控 cpu usage above threshold\n"
+        "Cpu usage averaged 87.5% for the previous 5 minutes.\n\n"
+        "https://monitor.treesir.pub/system/lcfre2r7zvyi3tb"
+    )
     result = translate(raw)
     assert "七牛香港-主控" in result
-    assert "92.3%" in result
-    assert "85%" in result
     assert "CPU 使用率" in result
+    assert "87.5%" in result
+    assert "https://monitor.treesir.pub/system/lcfre2r7zvyi3tb" in result
 
 
 def test_node_down():
-    result = translate("云悠HK is down")
+    raw = "云悠HK is down\n\nhttps://monitor.treesir.pub/system/gf6bzpi6976sh3c"
+    result = translate(raw)
     assert "离线" in result
     assert "云悠HK" in result
+    assert "https://monitor.treesir.pub" in result
 
 
 def test_node_up():
-    result = translate("云悠HK is up")
+    raw = "云悠HK is up\n\nhttps://monitor.treesir.pub/system/gf6bzpi6976sh3c"
+    result = translate(raw)
     assert "恢复" in result
-    assert "云悠HK" in result
+
+
+def test_url_extraction():
+    text, url = extract_url("some alert\n\nhttps://example.com/path")
+    assert url == "https://example.com/path"
+    assert "https://" not in text
+
+
+def test_no_url():
+    text, url = extract_url("some alert without url")
+    assert url == ""
+    assert text == "some alert without url"
 
 
 def test_fallback():
@@ -27,17 +59,12 @@ def test_fallback():
     assert "Beszel 告警" in result
 
 
-def test_metric_translation():
-    cases = [
-        ("Memory on srv exceeded 90% (current: 91%)", "内存使用率"),
-        ("Disk on srv exceeded 80% (current: 82%)", "磁盘使用率"),
-        ("Temperature on srv exceeded 75% (current: 76%)", "温度"),
-    ]
-    for raw, expected_zh in cases:
-        assert expected_zh in translate(raw), f"Missing '{expected_zh}' for: {raw}"
-
-
-def test_pattern_d():
-    result = translate("Disk exceeded 80% on 云悠HK")
-    assert "云悠HK" in result
-    assert "磁盘使用率" in result
+def test_memory_alert():
+    raw = (
+        "七牛香港-主控 memory usage above threshold\n"
+        "Memory usage averaged 91.2% for the previous 5 minutes.\n\n"
+        "https://monitor.treesir.pub/system/lcfre2r7zvyi3tb"
+    )
+    result = translate(raw)
+    assert "内存使用率" in result
+    assert "91.2%" in result

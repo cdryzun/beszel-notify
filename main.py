@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import logging
 from datetime import datetime, timezone, timedelta
 
@@ -19,17 +20,18 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 CST = timezone(timedelta(hours=8))
 
+# Beszel metric name → Chinese
 METRIC_ZH: dict[str, str] = {
-    "CPU": "CPU 使用率",
-    "Memory": "内存使用率",
-    "Disk": "磁盘使用率",
-    "Bandwidth": "网络带宽",
-    "Temperature": "温度",
-    "Status": "节点状态",
-    "GPU": "GPU 使用率",
-    "LoadAvg1": "1分钟负载",
-    "LoadAvg5": "5分钟负载",
-    "LoadAvg15": "15分钟负载",
+    "cpu": "CPU 使用率",
+    "memory": "内存使用率",
+    "disk": "磁盘使用率",
+    "bandwidth": "网络带宽",
+    "temperature": "温度",
+    "status": "节点状态",
+    "gpu": "GPU 使用率",
+    "loadavg1": "1分钟负载",
+    "loadavg5": "5分钟负载",
+    "loadavg15": "15分钟负载",
 }
 
 STATUS_ZH: dict[str, str] = {
@@ -37,121 +39,111 @@ STATUS_ZH: dict[str, str] = {
     "down": "已离线",
 }
 
-METRIC_ICON: dict[str, str] = {
-    "CPU": "CPU",
-    "Memory": "内存",
-    "Disk": "磁盘",
-    "Bandwidth": "带宽",
-    "Temperature": "温度",
-    "GPU": "GPU",
-    "LoadAvg1": "负载",
-    "LoadAvg5": "负载",
-    "LoadAvg15": "负载",
-}
-
 
 def now_cst() -> str:
     return datetime.now(CST).strftime("%Y-%m-%d %H:%M CST")
 
 
-async def extract_message(request: Request) -> str:
-    """Try every possible location Shoutrrr might put the message."""
-    raw_bytes = await request.body()
-    raw_str = raw_bytes.decode("utf-8", errors="replace").strip()
-
-    logger.info("Headers: %s", dict(request.headers))
-    logger.info("Query params: %s", dict(request.query_params))
-    logger.info("Raw body (%d bytes): %r", len(raw_bytes), raw_str[:500])
-
-    # 1. Query parameter
-    if request.query_params.get("message"):
-        return request.query_params["message"]
-
-    # 2. Plain text body (Shoutrrr default without template)
-    if raw_str and not raw_str.startswith("{") and not raw_str.startswith("["):
-        return raw_str
-
-    # 3. JSON body
-    if raw_str:
-        import json
-        try:
-            body = json.loads(raw_str)
-            for key in ("message", "text", "body", "content", "alert"):
-                if body.get(key):
-                    return str(body[key])
-            # Beszel may send structured data directly
-            if isinstance(body, dict) and body:
-                return str(body)
-        except json.JSONDecodeError:
-            pass
-
-    # 4. Form-encoded body
-    ct = request.headers.get("content-type", "")
-    if "form" in ct:
-        form = await request.form()
-        for key in ("message", "text", "body"):
-            if form.get(key):
-                return str(form[key])
-
-    return raw_str or "{empty}"
+def extract_url(text: str) -> tuple[str, str]:
+    """Pull the https://... link out of the message, return (text_without_url, url)."""
+    url_pattern = r"(https?://\S+)"
+    m = re.search(url_pattern, text)
+    if m:
+        url = m.group(1).rstrip(".")
+        cleaned = re.sub(url_pattern, "", text).strip()
+        return cleaned, url
+    return text, ""
 
 
 def translate(raw: str) -> str:
     ts = now_cst()
+    text, url = extract_url(raw)
+    url_line = f"\n{url}" if url else ""
 
-    # Pattern A: "Metric on System exceeded N% (current: V%)"
+    # ── Beszel real format ──────────────────────────────────────────
+    # Line 1: "{system} {metric} above/below threshold"
+    # Line 2: "{Metric} usage averaged {value}% for the previous N minute(s)."
+    # ───────────────────────────────────────────────────────────────
+
+    # Pattern A: threshold alert (above/below)
     m = re.search(
-        r"(\w+)\s+on\s+(.+?)\s+exceeded\s+([\d.]+)[%]?.*?current[:\s]+([\d.]+)[%]?",
-        raw, re.IGNORECASE,
+        r"^(.+?)\s+([\w]+)\s+(?:usage\s+)?(?:above|below)\s+threshold",
+        text, re.IGNORECASE | re.MULTILINE,
     )
     if m:
-        metric, system, threshold, current = m.groups()
-        metric_zh = METRIC_ZH.get(metric, metric)
+        system = m.group(1).strip()
+        metric_key = m.group(2).lower()
+        metric_zh = METRIC_ZH.get(metric_key, m.group(2))
+
+        # Extract current value from line 2
+        val_m = re.search(r"averaged?\s+([\d.]+)%", text, re.IGNORECASE)
+        value_str = f"{val_m.group(1)}%" if val_m else ""
+
+        direction = "超过" if "above" in text.lower() else "低于"
+
+        value_part = f"{metric_zh}：{value_str}（{direction}阈值）" if value_str else f"{metric_zh}：{direction}阈值"
+
+        return (
+            f"告警 | {system}\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"{value_part}\n"
+            f"━━━━━━━━━━━━━━━━━\n"
+            f"{ts}{url_line}"
+        )
+
+    # Pattern B: status down/up  "System is down/up"
+    m = re.search(r"^(.+?)\s+is\s+(down|up)\b", text, re.IGNORECASE | re.MULTILINE)
+    if m:
+        system, status = m.group(1).strip(), m.group(2).lower()
+        header = "节点离线" if status == "down" else "节点恢复"
+        return f"{header} | {system}\n{STATUS_ZH.get(status, status)}\n{ts}{url_line}"
+
+    # Pattern C: legacy "Metric on System exceeded N% (current: V%)"
+    m = re.search(
+        r"(\w+)\s+on\s+(.+?)\s+exceeded\s+([\d.]+)%.*?current[:\s]+([\d.]+)%",
+        text, re.IGNORECASE,
+    )
+    if m:
+        metric_key, system, threshold, current = m.groups()
+        metric_zh = METRIC_ZH.get(metric_key.lower(), metric_key)
         return (
             f"告警 | {system}\n"
             f"━━━━━━━━━━━━━━━━━\n"
             f"{metric_zh}：{current}%（阈值 {threshold}%）\n"
             f"━━━━━━━━━━━━━━━━━\n"
-            f"{ts}"
-        )
-
-    # Pattern B: "System is down/up"
-    m = re.search(r"(.+?)\s+is\s+(down|up)\b", raw, re.IGNORECASE)
-    if m:
-        system, status = m.groups()
-        status_lower = status.lower()
-        header = "节点离线" if status_lower == "down" else "节点恢复"
-        status_zh = STATUS_ZH.get(status_lower, status)
-        return f"{header} | {system}\n{status_zh}\n{ts}"
-
-    # Pattern C: "System status changed to down/up"
-    m = re.search(r"(.+?)\s+status.*?(down|up)", raw, re.IGNORECASE)
-    if m:
-        system, status = m.groups()
-        status_lower = status.lower()
-        header = "节点离线" if status_lower == "down" else "节点恢复"
-        status_zh = STATUS_ZH.get(status_lower, status)
-        return f"{header} | {system}\n{status_zh}\n{ts}"
-
-    # Pattern D: "Metric exceeded N% on System"
-    m = re.search(
-        r"(\w+)\s+exceeded\s+([\d.]+)[%]?\s+on\s+(.+?)(?:\s|$)",
-        raw, re.IGNORECASE,
-    )
-    if m:
-        metric, threshold, system = m.groups()
-        metric_zh = METRIC_ZH.get(metric, metric)
-        return (
-            f"告警 | {system}\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"{metric_zh}：超过阈值 {threshold}%\n"
-            f"━━━━━━━━━━━━━━━━━\n"
-            f"{ts}"
+            f"{ts}{url_line}"
         )
 
     # Fallback
     logger.warning("No pattern matched, raw: %r", raw)
-    return f"Beszel 告警\n{raw}\n{ts}"
+    return f"Beszel 告警\n{text}\n{ts}{url_line}"
+
+
+async def extract_message(request: Request) -> str:
+    """Read body as plain text first (Shoutrrr default), fallback to JSON."""
+    raw_bytes = await request.body()
+    raw_str = raw_bytes.decode("utf-8", errors="replace").strip()
+
+    logger.info("Content-Type: %s", request.headers.get("content-type", ""))
+    logger.info("Raw body: %r", raw_str[:500])
+
+    if not raw_str:
+        return "{empty}"
+
+    # Plain text (Shoutrrr default — not JSON)
+    if not raw_str.startswith("{") and not raw_str.startswith("["):
+        return raw_str
+
+    # JSON body
+    try:
+        body = json.loads(raw_str)
+        for key in ("message", "text", "body", "content"):
+            if body.get(key):
+                return str(body[key])
+    except json.JSONDecodeError:
+        pass
+
+    return raw_str
 
 
 async def send_telegram(text: str) -> None:
@@ -170,9 +162,9 @@ async def send_telegram(text: str) -> None:
 @app.post("/notify")
 async def notify(request: Request) -> JSONResponse:
     raw = await extract_message(request)
-    logger.info("Extracted message: %r", raw)
+    logger.info("Extracted: %r", raw)
     zh = translate(raw)
-    logger.info("Translated: %s", zh)
+    logger.info("Translated:\n%s", zh)
     await send_telegram(zh)
     return JSONResponse({"ok": True})
 
@@ -184,7 +176,12 @@ async def health() -> JSONResponse:
 
 @app.post("/test")
 async def test() -> JSONResponse:
-    sample = "CPU on 七牛香港-主控 exceeded 85% (current: 92.3%)"
+    # Simulate exact Beszel real payload
+    sample = (
+        "云悠HK disk usage above threshold\n"
+        "Disk usage averaged 94.43% for the previous 1 minute.\n\n"
+        "https://monitor.treesir.pub/system/gf6bzpi6976sh3c"
+    )
     zh = translate(sample)
     await send_telegram(zh)
     return JSONResponse({"ok": True, "message": zh})
