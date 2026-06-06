@@ -1,0 +1,16 @@
+services:
+  beszel-notify:
+    image: ghcr.io/cdryzun/beszel-notify:latest
+    container_name: beszel-notify
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
