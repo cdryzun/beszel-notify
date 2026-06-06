@@ -55,10 +55,11 @@ def translate(raw: str) -> str:
         metric, system, threshold, current = m.groups()
         metric_zh = METRIC_ZH.get(metric, metric)
         return (
-            f"告警触发 | {system}\n"
-            f"指标：{metric_zh}\n"
-            f"当前值：{current}%  阈值：{threshold}%\n"
-            f"时间：{ts}"
+            f"【告警】{system}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"  {metric_zh}  {current}% / {threshold}%\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"{ts}"
         )
 
     # Pattern B: "System is down/up"
@@ -66,18 +67,18 @@ def translate(raw: str) -> str:
     if m:
         system, status = m.groups()
         status_lower = status.lower()
+        header = "【节点离线】" if status_lower == "down" else "【节点恢复】"
         status_zh = STATUS_ZH.get(status_lower, status)
-        header = "节点离线" if status_lower == "down" else "节点恢复"
-        return f"{header} | {system}\n状态：{status_zh}\n时间：{ts}"
+        return f"{header}{system}\n{status_zh}\n{ts}"
 
     # Pattern C: "System status changed to down/up"
     m = re.search(r"(.+?)\s+status\s+changed.*?(down|up)", raw, re.IGNORECASE)
     if m:
         system, status = m.groups()
         status_lower = status.lower()
+        header = "【节点离线】" if status_lower == "down" else "【节点恢复】"
         status_zh = STATUS_ZH.get(status_lower, status)
-        header = "节点离线" if status_lower == "down" else "节点恢复"
-        return f"{header} | {system}\n状态：{status_zh}\n时间：{ts}"
+        return f"{header}{system}\n{status_zh}\n{ts}"
 
     # Pattern D: "Metric exceeded N% on System"
     m = re.search(
@@ -89,15 +90,16 @@ def translate(raw: str) -> str:
         metric, threshold, system = m.groups()
         metric_zh = METRIC_ZH.get(metric, metric)
         return (
-            f"告警触发 | {system}\n"
-            f"指标：{metric_zh}\n"
-            f"阈值：{threshold}%\n"
-            f"时间：{ts}"
+            f"【告警】{system}\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"  {metric_zh}  超过 {threshold}%\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"{ts}"
         )
 
     # Fallback: forward raw message wrapped in Chinese header
     logger.warning("No pattern matched, forwarding raw: %s", raw)
-    return f"Beszel 告警\n{raw}\n时间：{ts}"
+    return f"【Beszel 告警】\n{raw}\n{ts}"
 
 
 async def send_telegram(text: str) -> None:
