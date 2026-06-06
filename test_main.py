@@ -56,6 +56,51 @@ def test_node_up():
     assert "已恢复在线" in result
 
 
+def test_recovery_notification():
+    raw = (
+        "物理机-5600X disk usage below threshold\n"
+        "Disk usage averaged 71.75% for the previous 1 minute.\n\n"
+        "https://monitor.treesir.pub/system/1w5t1lnk10m89n1"
+    )
+    result = translate(raw)
+    assert "✅ 恢复" in result
+    assert "物理机-5600X" in result
+    assert "71.75%" in result
+    assert "低于阈值" in result
+    assert "https://monitor.treesir.pub" in result
+
+
+def test_recovery_clears_silence_window():
+    """恢复通知发出后，下次告警不应被静默窗口阻止"""
+    alert_raw = "云悠HK disk usage above threshold\nDisk usage averaged 94% for the previous 1 minute."
+    recovery_raw = "云悠HK disk usage below threshold\nDisk usage averaged 70% for the previous 1 minute."
+
+    first_alert = translate(alert_raw)
+    assert first_alert != ""
+
+    # 静默窗口内发告警 → 被拦截
+    second_alert = translate(alert_raw)
+    assert second_alert == ""
+
+    # 发恢复通知 → 不被拦截，且清除静默窗口
+    recovery = translate(recovery_raw)
+    assert "✅ 恢复" in recovery
+
+    # 清除后再发告警 → 不再被拦截
+    third_alert = translate(alert_raw)
+    assert third_alert != ""
+
+
+def test_recovery_bypasses_silence_window():
+    """恢复通知不受静默窗口限制，即使在告警后立即发出"""
+    alert_raw = "云悠HK disk usage above threshold\nDisk usage averaged 94% for the previous 1 minute."
+    recovery_raw = "云悠HK disk usage below threshold\nDisk usage averaged 70% for the previous 1 minute."
+
+    translate(alert_raw)  # 触发静默窗口
+    recovery = translate(recovery_raw)  # 恢复通知应该直接发出
+    assert "✅ 恢复" in recovery
+
+
 def test_silence_window_suppresses_duplicate():
     raw = (
         "云悠HK disk usage above threshold\n"

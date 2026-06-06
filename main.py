@@ -132,11 +132,28 @@ def translate(raw: str) -> str:
         )
         duration_line = f"\n持续：{duration}" if duration else ""
 
-        if is_silenced(system, metric_key):
+        is_recovery = direction_word == "below"
+
+        # 恢复通知跳过静默窗口直接发出；告警通知受静默窗口限制
+        if not is_recovery and is_silenced(system, metric_key):
             logger.info("Silenced alert for %s/%s within %ds window", system, metric_key, SILENCE_WINDOW)
             return ""
 
-        mark_sent(system, metric_key)
+        # 恢复后清除静默窗口，允许下次告警正常触发
+        if is_recovery:
+            _last_sent.pop((system, metric_key), None)
+        else:
+            mark_sent(system, metric_key)
+
+        if is_recovery:
+            return (
+                f"{EVENT_EMOJI['up']} 恢复 | {system}\n"
+                f"{SEPARATOR}\n"
+                f"指标：{metric_zh}\n"
+                f"{current_line}{duration_line}\n"
+                f"{SEPARATOR}\n"
+                f"时间：{ts}{url_line}"
+            )
         return (
             f"{EVENT_EMOJI['alert']} 告警 | {system}\n"
             f"{SEPARATOR}\n"
